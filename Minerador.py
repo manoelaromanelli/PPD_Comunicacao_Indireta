@@ -8,17 +8,15 @@ from threading import Thread
 BROKER = "broker.emqx.io"
 PORTA = 1883
 
-INTERVALO_DIFICULDADE = (1, 4)
+INTERVALO_DIFICULDADE = (1, 20)  # Ajustado para [1..20]
 LIMITE_LOOP = 50000
 
-TAG = "1dezembro"
-
 TOPICOS = {
-    "Ola":      f"sd/{TAG}/init",
-    "Votacao":  f"sd/{TAG}/voting",
-    "Tarefa":   f"sd/{TAG}/challenge",
-    "Resposta": f"sd/{TAG}/solution",
-    "Status":   f"sd/{TAG}/result",
+    "Ola":      "sd/init",
+    "Votacao":  "sd/voting",
+    "Tarefa":   "sd/challenge",
+    "Resposta": "sd/solution",
+    "Status":   "sd/result",
 }
 
 ESTAGIOS = {
@@ -77,7 +75,7 @@ class Nodo:
         self.sou_lider = False
         self.lider_id = None
 
-        self.contagem_tx = 0
+        self.contagem_tx = -1  # Para que o primeiro TransactionID seja 0
         self.participantes = set()
         self.votacoes = {}
         self.ativos = {}
@@ -101,7 +99,6 @@ class Nodo:
                 self._enviar_presenca()
             elif self.estado == ESTAGIOS["ELEICAO"]:
                 self._enviar_voto()
-
             time.sleep(2)
 
     def _enviar_presenca(self):
@@ -141,21 +138,22 @@ class Nodo:
 
         if self.sou_lider:
             time.sleep(2)
-            self._nova_transacao()
+            self._nova_transacao()  # Primeiro TransactionID será 0
 
     def _nova_transacao(self):
         self.contagem_tx += 1
+        tx_id = self.contagem_tx
         dificuldade = random.randint(*INTERVALO_DIFICULDADE)
 
-        self.ativos[self.contagem_tx] = {
+        self.ativos[tx_id] = {
             "Challenge": dificuldade,
             "Solution": "",
             "Winner": RETORNO["NAO_AVALIADO"]
         }
 
-        print(f"--- [LIDER] Criada T{self.contagem_tx} (Dif = {dificuldade}) ---")
+        print(f"--- [LIDER] Criada T{tx_id} (Dif = {dificuldade}) ---")
         self._publicar(TOPICOS["Tarefa"], {
-            "TransactionID": self.contagem_tx,
+            "TransactionID": tx_id,
             "Challenge": dificuldade
         })
 
@@ -182,16 +180,12 @@ class Nodo:
 
         if msg.topic == TOPICOS["Ola"]:
             self._rx_presenca(dados)
-
         elif msg.topic == TOPICOS["Votacao"]:
             self._rx_votacao(dados)
-
         elif msg.topic == TOPICOS["Tarefa"]:
             self._rx_tarefa(dados)
-
         elif msg.topic == TOPICOS["Resposta"] and self.sou_lider:
             self._rx_sol(dados)
-
         elif msg.topic == TOPICOS["Status"]:
             self._rx_status(dados)
 
@@ -201,7 +195,6 @@ class Nodo:
             return
 
         self.participantes.add(cid)
-
         if len(self.participantes) >= self.qtd_nos and self.estado == ESTAGIOS["SETUP"]:
             self._mudar_para_votacao()
 
@@ -243,10 +236,7 @@ class Nodo:
         tx = dados.get("TransactionID")
         sol = dados.get("Solution")
 
-        if tx not in self.ativos:
-            return
-
-        if self.ativos[tx]["Winner"] != RETORNO["NAO_AVALIADO"]:
+        if tx not in self.ativos or self.ativos[tx]["Winner"] != RETORNO["NAO_AVALIADO"]:
             return
 
         if self._confere(tx, sol):
