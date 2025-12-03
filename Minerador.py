@@ -9,7 +9,7 @@ DIFFICULTY_RANGE = (1, 4)
 MINING_PAUSE = 0.001
 NONCE_STEP = 50000
 
-SUFFIX = "1dezembro"
+SUFFIX = "PPD_lab3"
 
 CHANNELS = {
     "INIT": f"sd/{SUFFIX}/init",
