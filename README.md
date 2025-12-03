@@ -17,23 +17,17 @@ Para rodar o projeto, é necessário:
 
 ---
 
-## 2) Organização dos arquivos
-
-A estrutura do diretório é simples e contém:
-
-```
-Trabalho_PPD-CI/
-├─ Relatorio_Tecnico.pdf     # Documento explicando conceitos, testes e metodologia
-├─ minerador.py              # Aplicação completa (nó líder e nós trabalhadores)
-└─ README.md                 # Instruções de uso
-```
+## 2) Tecnologias Utilizadas
+* **Linguagem:** Python 3.x
+* **Comunicação:** MQTT via biblioteca **Paho MQTT**.
+* **Infraestrutura:** Docker (Container **EMQX** como Broker de Mensagens).
+* **Concorrência:** Biblioteca `threading` (para mineração paralela e controle de fluxo).
 
 ---
 
 ## 3) Ambiente e instalação de dependências
 
-O programa utiliza a biblioteca `paho-mqtt` para comunicação entre os nós.  
-Recomenda-se criar um ambiente virtual para evitar conflitos com dependências existentes.
+Para preparar o ambiente, será necessário instalar a biblioteca Paho MQTT e criar e ativar venv. Abra o terminal e execute:
 
 ---
 
@@ -62,12 +56,11 @@ pip install paho-mqtt
 
 ## 4) Execução
 
-O comportamento distribuído só acontece quando **três instâncias** do programa estão ativas ao mesmo tempo.  
-Cada instância deve rodar em um terminal diferente.
+O sistema exige no mínimo 3 participantes, o que significa que iremos utilizar 3 terminais diferentres.
 
 ---
 
-### Terminal 1
+### Terminal 1 (mesmo terminal usado na configuração do ambiente)
 
 ```bash
 python minerador.py
