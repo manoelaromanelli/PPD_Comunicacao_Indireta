@@ -1,251 +1,140 @@
 import paho.mqtt.client as mqtt
-import hashlib
-import random
-import json
-import time
+import hashlib, json, random, time
 from threading import Thread
 
-BROKER_HOST = "broker.emqx.io"
-BROKER_PORT = 1883
+BROKER = "broker.emqx.io"
+PORT = 1883
+DIFF_RANGE = (1, 4)
+PAUSE = 0.001
+NONCE_STEP = 50000
+TAG = "1dezembro"
 
-MIN_MAX_DIFF = (1, 4)
-SLEEP_STEP = 0.001
-NONCE_INTERVAL = 50000
-
-TOPIC_SUFFIX = "1dezembro"
-
-CHANNELS = {
-    "GREETING": f"sd/{TOPIC_SUFFIX}/init",
-    "VOTE": f"sd/{TOPIC_SUFFIX}/voting",
-    "TASK": f"sd/{TOPIC_SUFFIX}/challenge",
-    "ANSWER": f"sd/{TOPIC_SUFFIX}/solution",
-    "FEEDBACK": f"sd/{TOPIC_SUFFIX}/result",
+TOPICS = {
+    "JOIN": f"sd/{TAG}/init",
+    "VOTE": f"sd/{TAG}/voting",
+    "TASK": f"sd/{TAG}/challenge",
+    "SUBMIT": f"sd/{TAG}/solution",
+    "RESULT": f"sd/{TAG}/result"
 }
 
-STATES = {
-    "START": "Inicialização",
-    "VOTING": "Votação",
-    "WORKING": "Execução"
-}
+STATE = {"INIT":"S", "VOTE":"V", "WORK":"W"}
+STATUS = {"PENDING":-1, "FAIL":0, "SUCCESS":1}
 
-STATUS = {
-    "PENDING": -1,
-    "DENIED": 0,
-    "APPROVED": 1
-}
+def hash_check(diff, msg):
+    h = hashlib.sha1(msg.encode()).hexdigest()
+    return h, h.startswith("0"*diff)
 
-
-def check_hash(difficulty, data):
-    prefix = "0" * difficulty
-    digest = hashlib.sha1(data.encode("utf-8")).hexdigest()
-    return digest, digest.startswith(prefix)
-
-
-class MiningThread(Thread):
-    def __init__(self, node, transaction_id, difficulty):
+class Miner(Thread):
+    def __init__(self, node, tx, diff):
         super().__init__()
-        self.node = node
-        self.tx_id = transaction_id
-        self.diff = difficulty
-        self.active = True
-
+        self.node,self.tx,self.diff = node,tx,diff
+        self.active=True
     def run(self):
-        nonce = 0
+        n=0
         while self.active:
-            candidate = f"{self.tx_id}:{nonce}"
-            hash_val, valid = check_hash(self.diff, candidate)
-            if valid:
-                self.node.submit_solution(self.tx_id, candidate)
-                self.active = False
+            candidate=f"{self.tx}:{n}"
+            h,v=hash_check(self.diff,candidate)
+            if v:
+                self.node.submit(self.tx,candidate)
                 break
-            nonce += 1
-            if nonce % NONCE_INTERVAL == 0:
-                time.sleep(SLEEP_STEP)
+            n+=1
+            if n%NONCE_STEP==0: time.sleep(PAUSE)
+    def stop(self): self.active=False
 
-    def stop(self):
-        self.active = False
-
-
-class DistributedNode:
-    def __init__(self, broker_host, broker_port, expected_nodes):
-        self.broker_host = broker_host
-        self.broker_port = broker_port
-        self.expected_nodes = expected_nodes
-        self.node_id = random.randint(0, 65535)
-        self.state = STATES["START"]
-        self.is_leader = False
-        self.leader_id = -1
-        self.current_tx_id = 0
-        self.peers = set()
-        self.votes = {}
-        self.transactions = {}
-        self.mining_task = None
-        self.client = self._setup_client()
-
-    def _setup_client(self):
-        client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, f"Node_{self.node_id}")
-        client.on_connect = self._on_connect
-        client.on_message = self._on_message
-        return client
-
-    def _connect_to_broker(self):
-        self.client.connect(self.broker_host, self.broker_port, 60)
+class Node:
+    def __init__(self, broker,port,total):
+        self.broker,self.port,self.total = broker,port,total
+        self.id=random.randint(0,65535)
+        self.state=STATE["INIT"]
+        self.peers=set()
+        self.votes={}
+        self.txs={}
+        self.leader=None
+        self.is_leader=False
+        self.tx_id=0
+        self.worker=None
+        self.client=self._mqtt_init()
+    def _mqtt_init(self):
+        c=mqtt.Client(mqtt.CallbackAPIVersion.VERSION1,f"N{self.id}")
+        c.on_connect=self._on_connect
+        c.on_message=self._on_message
+        return c
+    def _connect(self):
+        self.client.connect(self.broker,self.port,60)
         self.client.loop_start()
-
-    def start(self):
-        print(f"Iniciando nó {self.node_id} (Esperado: {self.expected_nodes})")
-        self._connect_to_broker()
+    def run(self):
+        self._connect()
         while True:
-            if self.state == STATES["START"]:
-                self._announce()
-            elif self.state == STATES["VOTING"]:
-                self._cast_vote()
             time.sleep(2)
+            self._state_flow()
+    def _state_flow(self):
+        if self.state==STATE["INIT"]: self._join()
+        elif self.state==STATE["VOTE"]: self._vote()
+        elif self.state==STATE["WORK"] and self.is_leader:
+            if all(tx["Winner"]!=STATUS["PENDING"] for tx in self.txs.values()):
+                self._new_tx()
+    def _join(self):
+        self._send(TOPICS["JOIN"],{"ID":self.id})
+        if len(self.peers)>=self.total: self.state=STATE["VOTE"]
+    def _vote(self):
+        if self.id not in self.votes: self.votes[self.id]=random.randint(0,65535)
+        self._send(TOPICS["VOTE"],{"ID":self.id,"V":self.votes[self.id]})
+        if len(self.votes)>=self.total: self._count_votes()
+    def _count_votes(self):
+        self.leader=max(self.votes,key=lambda k:(self.votes[k],k))
+        self.is_leader=self.id==self.leader
+        self.state=STATE["WORK"]
+    def _new_tx(self):
+        self.tx_id+=1
+        tx=self.tx_id
+        diff=random.randint(*DIFF_RANGE)
+        self.txs[tx]={"Challenge":diff,"Solution":"","Winner":STATUS["PENDING"]}
+        self._send(TOPICS["TASK"],{"TX":tx,"C":diff})
+    def _handle_task(self,data):
+        if self.is_leader: return
+        tx=data.get("TX"); diff=data.get("C")
+        if self.worker and self.worker.is_alive(): self.worker.stop()
+        self.txs[tx]={"Challenge":diff,"Solution":"","Winner":STATUS["PENDING"]}
+        self.worker=Miner(self,tx,diff)
+        self.worker.start()
+    def submit(self,tx,sol):
+        self._send(TOPICS["SUBMIT"],{"ID":self.id,"TX":tx,"S":sol})
+    def _handle_submit(self,data):
+        tx=data.get("TX"); sol=data.get("S"); nid=data.get("ID")
+        info=self.txs.get(tx)
+        if info and info["Winner"]==STATUS["PENDING"]:
+            if self._valid(tx,sol): self._approve(nid,tx,sol)
+            else: self._reject(nid,tx,sol)
+    def _valid(self,tx,sol):
+        diff=self.txs[tx]["Challenge"]
+        _,v=hash_check(diff,sol)
+        return v
+    def _approve(self,nid,tx,sol):
+        self.txs[tx]["Winner"]=nid
+        self.txs[tx]["Solution"]=sol
+        self._send(TOPICS["RESULT"],{"ID":nid,"TX":tx,"S":sol,"R":STATUS["SUCCESS"]})
+    def _reject(self,nid,tx,sol):
+        self._send(TOPICS["RESULT"],{"ID":nid,"TX":tx,"S":sol,"R":STATUS["FAIL"]})
+    def _handle_result(self,data):
+        tx=data.get("TX"); res=data.get("R"); nid=data.get("ID")
+        if res==STATUS["SUCCESS"]:
+            if self.worker and self.worker.tx==tx: self.worker.stop()
+    def _on_connect(self,client,user,flags,rc):
+        if rc==0:
+            for ch in TOPICS.values(): client.subscribe(ch)
+    def _on_message(self,client,user,msg):
+        try:data=json.loads(msg.payload.decode())
+        except:return
+        hmap={
+            TOPICS["JOIN"]:self._join,
+            TOPICS["VOTE"]:self._vote,
+            TOPICS["TASK"]:self._handle_task,
+            TOPICS["SUBMIT"]:self._handle_submit if self.is_leader else lambda x:None,
+            TOPICS["RESULT"]:self._handle_result
+        }
+        handler=hmap.get(msg.topic)
+        if handler: handler(data)
 
-    def _announce(self):
-        self._publish(CHANNELS["GREETING"], {"NodeID": self.node_id})
-        if len(self.peers) >= self.expected_nodes:
-            self._begin_voting()
-
-    def _publish(self, channel, message):
-        self.client.publish(channel, json.dumps(message))
-
-    def _begin_voting(self):
-        if self.state == STATES["VOTING"]:
-            return
-        print(">>> Rede sincronizada. Iniciando votação...")
-        self.state = STATES["VOTING"]
-        for _ in range(3):
-            self._publish(CHANNELS["GREETING"], {"NodeID": self.node_id})
-            time.sleep(0.1)
-
-    def _cast_vote(self):
-        if self.node_id not in self.votes:
-            self.votes[self.node_id] = random.randint(0, 65535)
-        self._publish(CHANNELS["VOTE"], {"NodeID": self.node_id, "Vote": self.votes[self.node_id]})
-
-    def _on_connect(self, client, userdata, flags, rc):
-        if rc == 0:
-            print("Conectado ao broker MQTT.")
-            client.subscribe([(CHANNELS[key], 0) for key in CHANNELS])
-        else:
-            print(f"Falha na conexão ({rc})")
-
-    def _on_message(self, client, userdata, msg):
-        try:
-            data = json.loads(msg.payload.decode("utf-8"))
-        except:
-            return
-
-        topic = msg.topic
-        if topic == CHANNELS["GREETING"]:
-            self._handle_greeting(data)
-        elif topic == CHANNELS["VOTE"]:
-            self._handle_vote(data)
-        elif topic == CHANNELS["TASK"]:
-            self._handle_task(data)
-        elif topic == CHANNELS["ANSWER"] and self.is_leader:
-            self._handle_solution(data)
-        elif topic == CHANNELS["FEEDBACK"]:
-            self._handle_feedback(data)
-
-    def _handle_greeting(self, data):
-        peer_id = data.get("NodeID")
-        if peer_id is not None:
-            self.peers.add(peer_id)
-            if len(self.peers) >= self.expected_nodes and self.state == STATES["START"]:
-                self._begin_voting()
-
-    def _handle_vote(self, data):
-        peer_id = data.get("NodeID")
-        vote_val = data.get("Vote")
-        if peer_id is not None and vote_val is not None:
-            self.votes[peer_id] = vote_val
-        if len(self.votes) >= self.expected_nodes and self.state == STATES["VOTING"]:
-            self._tally_votes()
-
-    def _tally_votes(self):
-        winner = max(self.votes, key=lambda k: (self.votes[k], k))
-        self.leader_id = winner
-        self.is_leader = (self.node_id == self.leader_id)
-        print(f">>> Votação finalizada. Líder: {self.leader_id} (Sou eu? {self.is_leader})")
-        self._start_execution()
-
-    def _start_execution(self):
-        self.state = STATES["WORKING"]
-        if self.is_leader:
-            time.sleep(2)
-            self._create_transaction()
-
-    def _create_transaction(self):
-        self.current_tx_id += 1
-        difficulty = random.randint(*MIN_MAX_DIFF)
-        self.transactions[self.current_tx_id] = {"Challenge": difficulty, "Solution": "", "Winner": STATUS["PENDING"]}
-        print(f"--- [LIDER] Nova transação T{self.current_tx_id} (Dificuldade {difficulty}) ---")
-        self._publish(CHANNELS["TASK"], {"TransactionID": self.current_tx_id, "Challenge": difficulty})
-
-    def _handle_task(self, data):
-        if self.is_leader:
-            return
-        tx_id = data.get("TransactionID")
-        difficulty = data.get("Challenge")
-        print(f"Tarefa recebida T{tx_id} (Dif: {difficulty}). Iniciando mineração...")
-
-        if self.mining_task and self.mining_task.is_alive():
-            self.mining_task.stop()
-
-        self.transactions[tx_id] = {"Challenge": difficulty, "Solution": "", "Winner": STATUS["PENDING"]}
-        self.mining_task = MiningThread(self, tx_id, difficulty)
-        self.mining_task.start()
-
-    def submit_solution(self, tx_id, solution):
-        print(f"Solução encontrada para T{tx_id}: {solution}")
-        self._publish(CHANNELS["ANSWER"], {"NodeID": self.node_id, "TransactionID": tx_id, "Solution": solution})
-
-    def _handle_solution(self, data):
-        peer_id = data.get("NodeID")
-        tx_id = data.get("TransactionID")
-        solution = data.get("Solution")
-
-        tx_info = self.transactions.get(tx_id)
-        if tx_info and tx_info["Winner"] == STATUS["PENDING"]:
-            if self._verify_solution(tx_id, solution):
-                self._approve_solution(peer_id, tx_id, solution)
-            else:
-                self._deny_solution(peer_id, tx_id, solution)
-
-    def _verify_solution(self, tx_id, solution):
-        challenge = self.transactions[tx_id]["Challenge"]
-        _, valid = check_hash(challenge, solution)
-        return valid
-
-    def _approve_solution(self, peer_id, tx_id, solution):
-        self.transactions[tx_id]["Winner"] = peer_id
-        self.transactions[tx_id]["Solution"] = solution
-        print(f"--- [LIDER] Solução aceita de {peer_id} para T{tx_id} ---")
-        self._publish(CHANNELS["FEEDBACK"], {"NodeID": peer_id, "TransactionID": tx_id, "Solution": solution, "Result": STATUS["APPROVED"]})
-        time.sleep(3)
-        self._create_transaction()
-
-    def _deny_solution(self, peer_id, tx_id, solution):
-        print(f"[LIDER] Solução rejeitada de {peer_id}")
-        self._publish(CHANNELS["FEEDBACK"], {"NodeID": peer_id, "TransactionID": tx_id, "Solution": solution, "Result": STATUS["DENIED"]})
-
-    def _handle_feedback(self, data):
-        tx_id = data.get("TransactionID")
-        result = data.get("Result")
-        winner = data.get("NodeID")
-
-        if result == STATUS["APPROVED"]:
-            print(f">>> T{tx_id} finalizada. Vencedor: {winner}")
-            if self.mining_task and self.mining_task.tx_id == tx_id:
-                self.mining_task.stop()
-
-
-if __name__ == "__main__":
-    NUM_NODES = 3
-    node = DistributedNode(BROKER_HOST, BROKER_PORT, NUM_NODES)
-    try:
-        node.start()
-    except KeyboardInterrupt:
-        print("Encerrando nó...")
+if __name__=="__main__":
+    node=Node(BROKER,PORT,3)
+    node.run()
