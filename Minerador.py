@@ -1,298 +1,250 @@
+import paho.mqtt.client as mqtt
+import hashlib
+import random
 import json
 import time
-import random
-import hashlib
-import paho.mqtt.client as mqtt
-from threading import Thread
+from threading import Event, Thread
 
 BROKER = "broker.emqx.io"
-PORTA = 1883
+PORT = 1883
 
-INTERVALO_DIFICULDADE = (1, 20) 
-LIMITE_LOOP = 50000
+DIFFICULTY_RANGE = (1, 4)
+THROTTLE_STEP = 50000
+SUFFIX = "1dezembro"
 
-TOPICOS = {
-    "Ola":      "sd/init",
-    "Votacao":  "sd/voting",
-    "Tarefa":   "sd/challenge",
-    "Resposta": "sd/solution",
-    "Status":   "sd/result",
+TOPICS = {
+    "HELLO": f"sd/{SUFFIX}/init",
+    "VOTE": f"sd/{SUFFIX}/voting",
+    "TASK": f"sd/{SUFFIX}/challenge",
+    "SOLUTION": f"sd/{SUFFIX}/solution",
+    "RESULT": f"sd/{SUFFIX}/result",
 }
 
-ESTAGIOS = {
-    "SETUP": "Inicialização",
-    "ELEICAO": "Votação",
-    "TRABALHO": "Execução"
+STATES = {
+    "INIT": "Inicialização",
+    "VOTING": "Votação",
+    "EXECUTION": "Execução"
 }
 
-RETORNO = {
-    "VALIDO": 1,
-    "INVALIDO": 0,
-    "PENDENTE": -1
+RESULTS = {
+    "PENDING": -1,
+    "REJECTED": 0,
+    "ACCEPTED": 1
 }
 
-def calcula_hash(dificuldade, conteudo):
-    alvo = "0" * dificuldade
-    resultado = hashlib.sha1(conteudo.encode()).hexdigest()
-    return resultado, resultado.startswith(alvo)
 
-class Mineracao(Thread):
-    def __init__(self, instancia, tx, dificuldade):
+def hash_valid(difficulty, text):
+    hashed = hashlib.sha1(text.encode()).hexdigest()
+    return hashed, hashed.startswith('0' * difficulty)
+
+
+class Miner(Thread):
+    def __init__(self, node, tx_id, difficulty):
         super().__init__()
-        self.ctx = instancia
-        self.tx = tx
-        self.dificuldade = dificuldade
-        self.rodando = True
+        self.node = node
+        self.tx_id = tx_id
+        self.difficulty = difficulty
+        self.stop_event = Event()
 
     def run(self):
-        numero = 0
-        while self.rodando:
-            tentativa = f"{self.tx}:{numero}"
-            hash_val, ok = calcula_hash(self.dificuldade, tentativa)
-
-            if ok:
-                self.ctx.reportar_solucao(self.tx, tentativa)
-                self.rodando = False
+        nonce = 0
+        while not self.stop_event.is_set():
+            candidate = f"{self.tx_id}:{nonce}"
+            hash_val, valid = hash_valid(self.difficulty, candidate)
+            if valid:
+                self.node.submit_solution(self.tx_id, candidate)
                 break
-
-            numero += 1
-
-            if numero % LIMITE_LOOP == 0:
+            nonce += 1
+            if nonce % THROTTLE_STEP == 0:
                 time.sleep(0.001)
 
-    def parar(self):
-        self.rodando = False
+    def stop(self):
+        self.stop_event.set()
 
-class Nodo:
-    def __init__(self, broker, porta, quantidade):
+
+class DistributedNode:
+    def __init__(self, broker, port, expected_nodes):
         self.broker = broker
-        self.porta = porta
-        self.qtd_nos = quantidade
+        self.port = port
+        self.expected_nodes = expected_nodes
+        self.node_id = random.randint(0, 65535)
+        self.state = STATES["INIT"]
+        self.is_leader = False
+        self.leader_id = None
+        self.tx_id_counter = 0
+        self.peers = set()
+        self.votes = {}
+        self.transactions = {}
+        self.miner_thread = None
+        self.client = self.setup_mqtt()
 
-        self.id = random.randint(0, 65000)
-        self.estado = ESTAGIOS["SETUP"]
+    def setup_mqtt(self):
+        client = mqtt.Client(client_id=f"Node_{self.node_id}")
+        client.on_connect = self.on_connect
+        client.on_message = self.on_message
+        return client
 
-        self.sou_lider = False
-        self.lider_id = None
+    def connect(self):
+        self.client.connect(self.broker, self.port, 60)
+        self.client.loop_start()
 
-        self.contagem_tx = -1  # Para que o primeiro TransactionID seja 0
-        self.participantes = set()
-        self.votacoes = {}
-        self.ativos = {}
-        self.minerador = None
-
-        self.mqtt = self._configurar_mqtt()
-
-    def _configurar_mqtt(self):
-        cliente = mqtt.Client(mqtt.CallbackAPIVersion.VERSION1, f"NODO_{self.id}")
-        cliente.on_connect = self._quando_conectar
-        cliente.on_message = self._quando_receber
-        return cliente
-
-    def iniciar(self):
-        print(f"Iniciando nodo {self.id} aguardando {self.qtd_nos} participantes...")
-        self.mqtt.connect(self.broker, self.porta, 60)
-        self.mqtt.loop_start()
-
+    def start(self):
+        print(f"Nó {self.node_id} inicializando (Esperados: {self.expected_nodes})")
+        self.connect()
         while True:
-            if self.estado == ESTAGIOS["SETUP"]:
-                self._enviar_presenca()
-            elif self.estado == ESTAGIOS["ELEICAO"]:
-                self._enviar_voto()
+            if self.state == STATES["INIT"]:
+                self.broadcast_presence()
+            elif self.state == STATES["VOTING"]:
+                self.cast_vote()
             time.sleep(2)
 
-    def _enviar_presenca(self):
-        self._publicar(TOPICOS["Ola"], {"ClientID": self.id})
+    def broadcast_presence(self):
+        self.publish(TOPICS["HELLO"], {"NodeID": self.node_id})
+        if len(self.peers) >= self.expected_nodes:
+            self.transition_to_voting()
 
-        if len(self.participantes) >= self.qtd_nos:
-            self._mudar_para_votacao()
+    def publish(self, topic, data):
+        self.client.publish(topic, json.dumps(data))
 
-    def _mudar_para_votacao(self):
-        if self.estado == ESTAGIOS["ELEICAO"]:
+    def transition_to_voting(self):
+        if self.state == STATES["VOTING"]:
             return
-
-        print(">>> Todos presentes. Começando votação...")
-        self.estado = ESTAGIOS["ELEICAO"]
-
+        print(">>> Todos os nós conectados. Iniciando votação...")
+        self.state = STATES["VOTING"]
         for _ in range(3):
-            self._publicar(TOPICOS["Ola"], {"ClientID": self.id})
+            self.publish(TOPICS["HELLO"], {"NodeID": self.node_id})
             time.sleep(0.1)
 
-    def _enviar_voto(self):
-        if self.id not in self.votacoes:
-            self.votacoes[self.id] = random.randint(0, 65000)
+    def cast_vote(self):
+        if self.node_id not in self.votes:
+            self.votes[self.node_id] = random.randint(0, 65535)
+        vote = self.votes[self.node_id]
+        self.publish(TOPICS["VOTE"], {"NodeID": self.node_id, "VoteID": vote})
 
-        voto = self.votacoes[self.id]
-        self._publicar(TOPICOS["Votacao"], {"ClientID": self.id, "VoteID": voto})
-
-    def _contar_votos(self):
-        vencedor = max(self.votacoes, key=lambda k: (self.votacoes[k], k))
-        self.lider_id = vencedor
-        self.sou_lider = (vencedor == self.id)
-
-        print(f">>> Líder eleito: {self.lider_id}. Eu sou o líder? {self.sou_lider}")
-        self._mudar_para_execucao()
-
-    def _mudar_para_execucao(self):
-        self.estado = ESTAGIOS["TRABALHO"]
-
-        if self.sou_lider:
-            time.sleep(2)
-            self._nova_transacao()  # Primeiro TransactionID será 0
-
-    def _nova_transacao(self):
-        self.contagem_tx += 1
-        tx_id = self.contagem_tx
-        dificuldade = random.randint(*INTERVALO_DIFICULDADE)
-
-        self.ativos[tx_id] = {
-            "Challenge": dificuldade,
-            "Solution": "",
-            "Winner": RETORNO["PENDENTE"]
-        }
-
-        print(f"--- [LIDER] Criada T{tx_id} (Dif = {dificuldade}) ---")
-        self._publicar(TOPICOS["Tarefa"], {
-            "TransactionID": tx_id,
-            "Challenge": dificuldade
-        })
-
-    def reportar_solucao(self, tx, sol):
-        print(f"Encontrei solução para T{tx}: {sol}")
-        self._publicar(TOPICOS["Resposta"], {
-            "ClientID": self.id,
-            "TransactionID": tx,
-            "Solution": sol
-        })
-
-    def _quando_conectar(self, client, userdata, flags, rc):
+    # MQTT Callbacks
+    def on_connect(self, client, userdata, flags, rc):
         if rc == 0:
-            print("Conectado ao broker.")
-            self.mqtt.subscribe([(TOPICOS[t], 0) for t in TOPICOS])
+            print("Conectado ao broker MQTT.")
+            self.client.subscribe([(TOPICS[k], 0) for k in TOPICS])
         else:
-            print(f"Falha ao conectar: {rc}")
+            print(f"Falha na conexão ({rc})")
 
-    def _quando_receber(self, client, userdata, msg):
+    def on_message(self, client, userdata, msg):
         try:
-            dados = json.loads(msg.payload.decode())
-        except:
+            data = json.loads(msg.payload.decode())
+        except json.JSONDecodeError:
             return
 
-        if msg.topic == TOPICOS["Ola"]:
-            self._rx_presenca(dados)
-        elif msg.topic == TOPICOS["Votacao"]:
-            self._rx_votacao(dados)
-        elif msg.topic == TOPICOS["Tarefa"]:
-            self._rx_tarefa(dados)
-        elif msg.topic == TOPICOS["Resposta"] and self.sou_lider:
-            self._rx_sol(dados)
-        elif msg.topic == TOPICOS["Status"]:
-            self._rx_status(dados)
-
-    def _rx_presenca(self, dados):
-        cid = dados.get("ClientID")
-        if cid is None:
-            return
-
-        self.participantes.add(cid)
-        if len(self.participantes) >= self.qtd_nos and self.estado == ESTAGIOS["SETUP"]:
-            self._mudar_para_votacao()
-
-    def _rx_votacao(self, dados):
-        cid = dados.get("ClientID")
-        voto = dados.get("VoteID")
-
-        if cid is None or voto is None:
-            return
-
-        self.votacoes[cid] = voto
-
-        if len(self.votacoes) >= self.qtd_nos and self.estado == ESTAGIOS["ELEICAO"]:
-            self._contar_votos()
-
-    def _rx_tarefa(self, dados):
-        if self.sou_lider:
-            return
-
-        tx = dados.get("TransactionID")
-        dif = dados.get("Challenge")
-
-        print(f"T{tx} recebida. Iniciando busca...")
-
-        if self.minerador and self.minerador.is_alive():
-            self.minerador.parar()
-
-        self.ativos[tx] = {
-            "Challenge": dif,
-            "Solution": "",
-            "Winner": RETORNO["PENDENTE"]
+        topic_map = {
+            TOPICS["HELLO"]: self.handle_hello,
+            TOPICS["VOTE"]: self.handle_vote,
+            TOPICS["TASK"]: self.handle_task,
+            TOPICS["SOLUTION"]: self.handle_solution if self.is_leader else lambda x: None,
+            TOPICS["RESULT"]: self.handle_result
         }
 
-        self.minerador = Mineracao(self, tx, dif)
-        self.minerador.start()
+        handler = topic_map.get(msg.topic)
+        if handler:
+            handler(data)
 
-    def _rx_sol(self, dados):
-        cid = dados.get("ClientID")
-        tx = dados.get("TransactionID")
-        sol = dados.get("Solution")
+    # Handlers
+    def handle_hello(self, data):
+        peer_id = data.get("NodeID")
+        if peer_id is not None:
+            self.peers.add(peer_id)
+            if len(self.peers) >= self.expected_nodes and self.state == STATES["INIT"]:
+                self.transition_to_voting()
 
-        if tx not in self.ativos or self.ativos[tx]["Winner"] != RETORNO["PENDENTE"]:
+    def handle_vote(self, data):
+        peer_id = data.get("NodeID")
+        vote = data.get("VoteID")
+        if peer_id is not None and vote is not None:
+            self.votes[peer_id] = vote
+
+        if len(self.votes) >= self.expected_nodes and self.state == STATES["VOTING"]:
+            self.count_votes()
+
+    def count_votes(self):
+        self.leader_id = max(self.votes, key=lambda k: (self.votes[k], k))
+        self.is_leader = (self.node_id == self.leader_id)
+        print(f">>> Votação finalizada. Líder: {self.leader_id} (Sou eu? {self.is_leader})")
+        self.transition_to_execution()
+
+    def transition_to_execution(self):
+        self.state = STATES["EXECUTION"]
+        if self.is_leader:
+            time.sleep(2)
+            self.create_transaction()
+
+    def create_transaction(self):
+        self.tx_id_counter += 1
+        difficulty = random.randint(*DIFFICULTY_RANGE)
+        self.transactions[self.tx_id_counter] = {"Challenge": difficulty, "Solution": "", "Winner": RESULTS["PENDING"]}
+        print(f"--- [LÍDER] Nova Transação T{self.tx_id_counter} (Dif: {difficulty}) ---")
+        self.publish(TOPICS["TASK"], {"TransactionID": self.tx_id_counter, "Challenge": difficulty})
+
+    def handle_task(self, data):
+        if self.is_leader:
             return
 
-        if self._confere(tx, sol):
-            self._aprova(cid, tx, sol)
-        else:
-            self._nega(cid, tx, sol)
+        tx_id = data.get("TransactionID")
+        difficulty = data.get("Challenge")
+        print(f"Tarefa recebida T{tx_id} (Dif: {difficulty}). Iniciando mineração...")
 
-    def _confere(self, tx, sol):
-        dificuldade = self.ativos[tx]["Challenge"]
-        _, ok = calcula_hash(dificuldade, sol)
-        return ok
+        if self.miner_thread and self.miner_thread.is_alive():
+            self.miner_thread.stop()
 
-    def _aprova(self, cid, tx, sol):
-        self.ativos[tx]["Winner"] = cid
-        self.ativos[tx]["Solution"] = sol
+        self.transactions[tx_id] = {"Challenge": difficulty, "Solution": "", "Winner": RESULTS["PENDING"]}
+        self.miner_thread = Miner(self, tx_id, difficulty)
+        self.miner_thread.start()
 
-        print(f"--- [LIDER] Solução aceita de {cid} para T{tx} ---")
+    def submit_solution(self, tx_id, solution):
+        print(f"Solução T{tx_id} encontrada: {solution}")
+        self.publish(TOPICS["SOLUTION"], {"NodeID": self.node_id, "TransactionID": tx_id, "Solution": solution})
 
-        self._publicar(TOPICOS["Status"], {
-            "ClientID": cid,
-            "TransactionID": tx,
-            "Solution": sol,
-            "Result": RETORNO["VALIDO"]
-        })
+    def handle_solution(self, data):
+        peer_id = data.get("NodeID")
+        tx_id = data.get("TransactionID")
+        solution = data.get("Solution")
 
+        if tx_id in self.transactions and self.transactions[tx_id]["Winner"] == RESULTS["PENDING"]:
+            if self.validate_solution(tx_id, solution):
+                self.approve_solution(peer_id, tx_id, solution)
+            else:
+                self.reject_solution(peer_id, tx_id, solution)
+
+    def validate_solution(self, tx_id, solution):
+        challenge = self.transactions[tx_id]["Challenge"]
+        _, valid = hash_valid(challenge, solution)
+        return valid
+
+    def approve_solution(self, peer_id, tx_id, solution):
+        self.transactions[tx_id]["Winner"] = peer_id
+        self.transactions[tx_id]["Solution"] = solution
+        print(f"--- [LÍDER] Solução aceita de {peer_id} para T{tx_id} ---")
+        self.publish(TOPICS["RESULT"], {"NodeID": peer_id, "TransactionID": tx_id, "Solution": solution, "Result": RESULTS["ACCEPTED"]})
         time.sleep(3)
-        self._nova_transacao()
+        self.create_transaction()
 
-    def _nega(self, cid, tx, sol):
-        print(f"[LIDER] Solução inválida de {cid} para T{tx}")
-        self._publicar(TOPICOS["Status"], {
-            "ClientID": cid,
-            "TransactionID": tx,
-            "Solution": sol,
-            "Result": RETORNO["INVALIDO"]
-        })
+    def reject_solution(self, peer_id, tx_id, solution):
+        print(f"[LÍDER] Solução rejeitada de {peer_id}")
+        self.publish(TOPICS["RESULT"], {"NodeID": peer_id, "TransactionID": tx_id, "Solution": solution, "Result": RESULTS["REJECTED"]})
 
-    def _rx_status(self, dados):
-        tx = dados.get("TransactionID")
-        res = dados.get("Result")
-        cid = dados.get("ClientID")
+    def handle_result(self, data):
+        tx_id = data.get("TransactionID")
+        result = data.get("Result")
+        winner = data.get("NodeID")
 
-        if res == RETORNO["VALIDO"]:
-            print(f">>> T{tx} resolvida por {cid}")
+        if result == RESULTS["ACCEPTED"]:
+            print(f">>> T{tx_id} finalizada. Vencedor: {winner}")
+            if self.miner_thread and self.miner_thread.tx_id == tx_id:
+                self.miner_thread.stop()
 
-            if self.minerador and self.minerador.tx == tx:
-                self.minerador.parar()
-
-    def _publicar(self, topico, conteudo):
-        self.mqtt.publish(topico, json.dumps(conteudo))
 
 if __name__ == "__main__":
-    N = 3
-    nodo = Nodo(BROKER, PORTA, N)
-
+    node_count = 3
+    node = DistributedNode(BROKER, PORT, node_count)
     try:
-        nodo.iniciar()
+        node.start()
     except KeyboardInterrupt:
-        print("Encerrando...")
+        print("Encerrando nó...")
