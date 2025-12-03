@@ -1,8 +1,5 @@
 import paho.mqtt.client as mqtt
-import hashlib
-import json
-import random
-import time
+import hashlib, json, random, time
 from threading import Thread
 
 MQTT_HOST = "broker.emqx.io"
