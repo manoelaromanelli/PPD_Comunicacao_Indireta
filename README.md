@@ -40,7 +40,6 @@ Recomenda-se criar um ambiente virtual para evitar conflitos com dependências e
 ### 3.1 Windows (PowerShell)
 
 ```powershell
-# entrar na pasta do projeto (onde está minerador.py)
 cd [caminho para a pasta]
 py -m venv .venv
 Set-ExecutionPolicy Bypass -Scope Process
