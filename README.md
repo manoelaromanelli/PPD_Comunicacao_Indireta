@@ -60,44 +60,35 @@ pip install paho-mqtt
 
 ---
 
-## 4) Como executar o sistema (mínimo: 3 nós)
+## 4) Execução
 
 O comportamento distribuído só acontece quando **três instâncias** do programa estão ativas ao mesmo tempo.  
 Cada instância deve rodar em um terminal diferente.
 
 ---
 
-### Terminal 1 (Nó A)
+### Terminal 1
 
 ```bash
 python minerador.py
 ```
 
-### Terminal 2 (Nó B)
+### Terminal 2
 
 ```bash
-cd C:\caminho\para\Trabalho_PPD
+cd [caminho para a pasta]
 Set-ExecutionPolicy Bypass -Scope Process
 .\.venv\Scripts\Activate.ps1
 python minerador.py
 ```
 
-### Terminal 3 (Nó C)
+### Terminal 3
 
 ```bash
-cd C:\caminho\para\Trabalho_PPD
+cd [caminho para a pasta]
 Set-ExecutionPolicy Bypass -Scope Process
 .\.venv\Scripts\Activate.ps1
 python minerador.py
-```
-
----
-
-### Exemplo de início da execução
-
-```
->>> Todos os nós conectados. Iniciando processo de eleição...
-Coordenador definido: <ID>
 ```
 
 ---
@@ -108,64 +99,36 @@ Depois que as três instâncias estão ativas, o programa passa por três grande
 
 ---
 
-### 5.1 Sincronização inicial
+### Sincronização
 
 Cada nó anuncia sua presença no tópico MQTT apropriado até que o grupo alcance o total necessário.
 
-- Mensagem típica: `Presença detectada (X/3)...`
-- Comportamento: aguarda os demais nós para formar o grupo
-
 ---
 
-### 5.2 Processo de eleição
+### Eleição
 
 Quando o conjunto mínimo de nós está ativo, todos participam de uma votação simples:
 
 1. Cada nó gera um valor numérico aleatório.  
 2. Todos publicam sua proposta de voto.  
-3. O maior valor enviado define o **coordenador** (com desempate por ID).  
-
-Mensagem esperada:
-
-```
-Coordenador definido: <ID_do_vencedor>
-```
+3. O maior valor enviado define o **líder** 
 
 ---
 
-### 5.3 Execução das tarefas de mineração
+### Mineração
 
-Depois da eleição, inicia-se um ciclo contínuo de criação, distribuição e validação de desafios:
+Depois da eleição, inicia-se um ciclo contínuo de criação, distribuição e validação de tarefas:
 
-#### A) Função do coordenador
-O nó líder cria uma nova tarefa, define uma dificuldade (ex.: quantidade de zeros no início do hash) e publica o desafio.
+#### Líder
+O nó líder cria uma nova transação, define uma dificuldade e publica a tarefa.
 
-Log típico:
+#### mineradores
+Os nós restantes tentam resolver a tarefa testando diferentes valores até encontrar um hash válido.
 
-```
-[LIDER] Nova tarefa T1 criada (dificuldade 3)
-```
-
-#### B) Função dos trabalhadores
-Os nós restantes tentam resolver o desafio testando diferentes valores (nonce) até encontrar um hash válido.
-
-Exemplos:
-
-```
-T1 recebida. Iniciando busca...
-Solução encontrada: <nonce>
-```
-
-A primeira solução válida é enviada ao coordenador.
+A primeira solução válida é enviada ao líder.
 
 #### C) Validação e anúncio do resultado
-O coordenador verifica a solução recebida e, se estiver correta, publica o resultado para todos.
-
-Mensagem:
-
-```
->>> T1 concluída. Nó vencedor: <ID>
-```
+O líder verifica a solução recebida e, se estiver correta, publica o resultado para todos.
 
 Em seguida, uma nova tarefa é criada e o ciclo recomeça.
 
@@ -181,6 +144,4 @@ Em seguida, uma nova tarefa é criada e o ciclo recomeça.
 
 ## 7) Documentação complementar
 
-Mais detalhes teóricos e metodológicos podem ser encontrados em:
-
-📄 **Relatorio_Tecnico.pdf**
+Mais detalhes teóricos e metodológicos podem ser encontrados em: **Relatorio_Tecnico.pdf**
