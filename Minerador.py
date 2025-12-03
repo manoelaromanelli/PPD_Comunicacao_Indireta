@@ -8,7 +8,7 @@ from threading import Thread
 BROKER = "broker.emqx.io"
 PORTA = 1883
 
-INTERVALO_DIFICULDADE = (1, 20)  # Ajustado para [1..20]
+INTERVALO_DIFICULDADE = (1, 20) 
 LIMITE_LOOP = 50000
 
 TOPICOS = {
@@ -26,9 +26,9 @@ ESTAGIOS = {
 }
 
 RETORNO = {
-    "NAO_AVALIADO": -1,
+    "VALIDO": 1,
     "INVALIDO": 0,
-    "VALIDO": 1
+    "PENDENTE": -1
 }
 
 def calcula_hash(dificuldade, conteudo):
@@ -148,7 +148,7 @@ class Nodo:
         self.ativos[tx_id] = {
             "Challenge": dificuldade,
             "Solution": "",
-            "Winner": RETORNO["NAO_AVALIADO"]
+            "Winner": RETORNO["PENDENTE"]
         }
 
         print(f"--- [LIDER] Criada T{tx_id} (Dif = {dificuldade}) ---")
@@ -225,7 +225,7 @@ class Nodo:
         self.ativos[tx] = {
             "Challenge": dif,
             "Solution": "",
-            "Winner": RETORNO["NAO_AVALIADO"]
+            "Winner": RETORNO["PENDENTE"]
         }
 
         self.minerador = Mineracao(self, tx, dif)
@@ -236,7 +236,7 @@ class Nodo:
         tx = dados.get("TransactionID")
         sol = dados.get("Solution")
 
-        if tx not in self.ativos or self.ativos[tx]["Winner"] != RETORNO["NAO_AVALIADO"]:
+        if tx not in self.ativos or self.ativos[tx]["Winner"] != RETORNO["PENDENTE"]:
             return
 
         if self._confere(tx, sol):
