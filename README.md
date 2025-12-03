@@ -9,11 +9,11 @@ O arquivo principal (**minerador**) implementa um conjunto de nós que se comuni
 ## 1) Requisitos para execução
 
 Para rodar o projeto, é necessário:
-
-- **Python 3.8 ou mais recente** (idealmente versão 3.10+)  
-- `pip` acessível no sistema  
 - **Internet ativa**, pois os nós se conectam ao broker MQTT público `broker.emqx.io`  
 - Terminal (PowerShell, CMD, Bash ou equivalente)
+- **Python 3.8 ou mais recente**
+- `pip` acessível no sistema  
+
 
 ---
 
@@ -40,7 +40,8 @@ Recomenda-se criar um ambiente virtual para evitar conflitos com dependências e
 ### 3.1 Windows (PowerShell)
 
 ```powershell
-cd C:\caminho\para\Trabalho_PPD
+# entrar na pasta do projeto (onde está minerador.py)
+cd [caminho para a pasta]
 py -m venv .venv
 Set-ExecutionPolicy Bypass -Scope Process
 .\.venv\Scripts\Activate.ps1
