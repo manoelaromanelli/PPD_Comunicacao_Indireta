@@ -11,7 +11,7 @@ from threading import Thread, Lock
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
 
-NUM_PARTICIPANTS = 3   # Total de nós no sistema
+NUM_PARTICIPANTS = 3   # Total de nós
 CHALLENGE_MIN = 1
 CHALLENGE_MAX = 20
 
@@ -158,34 +158,38 @@ def controller_loop():
         tx_id += 1
 
 # -------------------------------
-# Inicialização MQTT
-# -------------------------------
-client = mqtt.Client()
-client.on_connect = on_connect
-client.on_message = on_message
-client.message_callback_add(TOPIC_SOLUTION, handle_solutions())
-client.connect(MQTT_BROKER, MQTT_PORT, 60)
-
-# -------------------------------
 # Inicialização e Eleição
 # -------------------------------
 def init_and_election():
+    # Envia InitMsg
     init_msg = {"ClientID": ClientID}
     client.publish(TOPIC_INIT, json.dumps(init_msg))
     print("[INIT] InitMsg enviado.")
 
+    # Espera InitMsg dos outros nós (timeout de 5s)
+    start_time = time.time()
     while len(init_received) < NUM_PARTICIPANTS - 1:
+        if time.time() - start_time > 5:
+            break
         time.sleep(0.1)
 
+    # Envia ElectionMsg
     election_msg = {"ClientID": ClientID, "VoteID": VoteID}
     client.publish(TOPIC_ELECTION, json.dumps(election_msg))
     print("[ELECTION] ElectionMsg enviado.")
 
+    # Espera votos dos outros nós (timeout de 5s)
+    start_time = time.time()
     while len(votes_received) < NUM_PARTICIPANTS - 1:
+        if time.time() - start_time > 5:
+            break
         time.sleep(0.1)
 
+    # Inclui próprio voto
     all_votes = votes_received.copy()
     all_votes[ClientID] = VoteID
+
+    # Eleição do líder
     leader = max(all_votes.items(), key=lambda x: (x[1], x[0]))[0]
     print(f"[ELECTION] Líder eleito: ClientID {leader}")
     return leader
@@ -195,15 +199,25 @@ def init_and_election():
 # -------------------------------
 def main_loop():
     global leader_id
-    client.loop_start()  # <--- roda o loop MQTT em background
+    client.loop_start()  # Roda loop MQTT em background
     leader_id = init_and_election()
 
     if leader_id == ClientID:
         print("[INFO] Eu sou o líder, iniciando controlador.")
         Thread(target=controller_loop, daemon=True).start()
 
+    # Mantém o programa vivo
     while True:
         time.sleep(1)
+
+# -------------------------------
+# Inicialização MQTT
+# -------------------------------
+client = mqtt.Client()
+client.on_connect = on_connect
+client.on_message = on_message
+client.message_callback_add(TOPIC_SOLUTION, handle_solutions())
+client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
 # -------------------------------
 # Execução
