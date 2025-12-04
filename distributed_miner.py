@@ -11,7 +11,7 @@ from threading import Thread, Lock
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
 
-NUM_PARTICIPANTS = 3   # Total de nós no sistema (pode alterar)
+NUM_PARTICIPANTS = 3   # Total de nós no sistema
 CHALLENGE_MIN = 1
 CHALLENGE_MAX = 20
 
@@ -45,7 +45,6 @@ def generate_challenge():
     return random.randint(CHALLENGE_MIN, CHALLENGE_MAX)
 
 def solve_challenge(challenge):
-    # Simple proof-of-work: find nonce such that sha1(str(nonce)) starts with challenge zeros
     nonce = 0
     prefix = "0" * challenge
     while True:
@@ -59,46 +58,33 @@ def solve_challenge(challenge):
 # -------------------------------
 def on_connect(client, userdata, flags, rc):
     print("[MQTT] Conectado com broker.")
-    client.subscribe([(TOPIC_INIT,0), (TOPIC_ELECTION,0), (TOPIC_CHALLENGE,0),
-                      (TOPIC_SOLUTION,0), (TOPIC_RESULT,0)])
+    client.subscribe([(TOPIC_INIT, 0), (TOPIC_ELECTION, 0),
+                      (TOPIC_CHALLENGE, 0), (TOPIC_SOLUTION, 0),
+                      (TOPIC_RESULT, 0)])
 
 def on_message(client, userdata, msg):
     global leader_id
     topic = msg.topic
     payload = json.loads(msg.payload.decode())
-    
-    # -------------------------------
-    # Fase de Inicialização
-    # -------------------------------
+
     if topic == TOPIC_INIT:
         cid = payload["ClientID"]
         if cid != ClientID:
             init_received.add(cid)
         print(f"[INIT] Recebido ClientID: {cid}")
 
-    # -------------------------------
-    # Fase de Eleição
-    # -------------------------------
     elif topic == TOPIC_ELECTION:
         cid = payload["ClientID"]
         vote = payload["VoteID"]
         votes_received[cid] = vote
         print(f"[ELECTION] Recebido voto {vote} de ClientID {cid}")
 
-    # -------------------------------
-    # Recepção de Desafios
-    # -------------------------------
     elif topic == TOPIC_CHALLENGE:
         tx_id = payload["TransactionID"]
         challenge = payload["Challenge"]
         print(f"[CHALLENGE] TransactionID: {tx_id}, Challenge: {challenge}")
+        Thread(target=mine_solution, args=(tx_id, challenge), daemon=True).start()
 
-        # Inicia thread de mineração
-        Thread(target=mine_solution, args=(tx_id, challenge)).start()
-
-    # -------------------------------
-    # Recepção de Resultados
-    # -------------------------------
     elif topic == TOPIC_RESULT:
         print(f"[RESULT] {payload}")
 
@@ -116,30 +102,6 @@ def mine_solution(tx_id, challenge):
     print(f"[MINE] Enviado solution para TransactionID {tx_id}")
 
 # -------------------------------
-# Função do Controlador
-# -------------------------------
-def controller_loop():
-    global transaction_table
-    tx_id = 0
-    while True:
-        challenge = generate_challenge()
-        with table_lock:
-            transaction_table[tx_id] = {
-                "Challenge": challenge,
-                "Solution": None,
-                "Winner": -1
-            }
-
-        # Publica desafio
-        msg = {"TransactionID": tx_id, "Challenge": challenge}
-        client.publish(TOPIC_CHALLENGE, json.dumps(msg))
-        print(f"[CONTROL] Novo desafio enviado: TransactionID {tx_id}, Challenge {challenge}")
-
-        # Aguarda soluções
-        time.sleep(10)
-        tx_id += 1
-
-# -------------------------------
 # Callback para soluções recebidas
 # -------------------------------
 def handle_solutions():
@@ -151,7 +113,6 @@ def handle_solutions():
 
         with table_lock:
             if tx_id in transaction_table and transaction_table[tx_id]["Winner"] == -1:
-                # Verifica solução
                 challenge = transaction_table[tx_id]["Challenge"]
                 if sha1_hash(solution).startswith("0" * challenge):
                     transaction_table[tx_id]["Winner"] = cid
@@ -176,6 +137,27 @@ def handle_solutions():
     return inner
 
 # -------------------------------
+# Função do Controlador
+# -------------------------------
+def controller_loop():
+    tx_id = 0
+    while True:
+        challenge = generate_challenge()
+        with table_lock:
+            transaction_table[tx_id] = {
+                "Challenge": challenge,
+                "Solution": None,
+                "Winner": -1
+            }
+
+        msg = {"TransactionID": tx_id, "Challenge": challenge}
+        client.publish(TOPIC_CHALLENGE, json.dumps(msg))
+        print(f"[CONTROL] Novo desafio enviado: TransactionID {tx_id}, Challenge {challenge}")
+
+        time.sleep(10)
+        tx_id += 1
+
+# -------------------------------
 # Inicialização MQTT
 # -------------------------------
 client = mqtt.Client()
@@ -188,25 +170,20 @@ client.connect(MQTT_BROKER, MQTT_PORT, 60)
 # Inicialização e Eleição
 # -------------------------------
 def init_and_election():
-    # Envia InitMsg
     init_msg = {"ClientID": ClientID}
     client.publish(TOPIC_INIT, json.dumps(init_msg))
     print("[INIT] InitMsg enviado.")
 
-    # Aguarda todos os participantes
     while len(init_received) < NUM_PARTICIPANTS - 1:
-        time.sleep(1)
+        time.sleep(0.1)
 
-    # Envia ElectionMsg
     election_msg = {"ClientID": ClientID, "VoteID": VoteID}
     client.publish(TOPIC_ELECTION, json.dumps(election_msg))
     print("[ELECTION] ElectionMsg enviado.")
 
-    # Aguarda votos
     while len(votes_received) < NUM_PARTICIPANTS - 1:
-        time.sleep(1)
+        time.sleep(0.1)
 
-    # Determina líder
     all_votes = votes_received.copy()
     all_votes[ClientID] = VoteID
     leader = max(all_votes.items(), key=lambda x: (x[1], x[0]))[0]
@@ -214,15 +191,19 @@ def init_and_election():
     return leader
 
 # -------------------------------
-# Threads principais
+# Loop principal
 # -------------------------------
 def main_loop():
     global leader_id
+    client.loop_start()  # <--- roda o loop MQTT em background
     leader_id = init_and_election()
+
     if leader_id == ClientID:
         print("[INFO] Eu sou o líder, iniciando controlador.")
         Thread(target=controller_loop, daemon=True).start()
-    client.loop_forever()
+
+    while True:
+        time.sleep(1)
 
 # -------------------------------
 # Execução
