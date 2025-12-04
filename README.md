@@ -2,7 +2,7 @@
 Sistema distribuído com eleição de coordenador e execução cooperativa de tarefas via MQTT
 
 Este repositório reúne a solução desenvolvida para o **Laboratório III** da disciplina de Programação Paralela e Distribuída.  
-O arquivo principal (**minerador**) implementa um conjunto de nós que se comunicam por MQTT, elegem um coordenador e processam desafios de mineração utilizando um esquema simples de Proof of Work.
+O arquivo principal (**miner**) implementa um conjunto de nós que se comunicam por MQTT, elegem um coordenador e processam desafios de mineração utilizando um esquema simples de Proof of Work.
 
 ---
 
@@ -63,7 +63,7 @@ O sistema exige no mínimo 3 participantes, o que significa que iremos utilizar 
 ### Terminal 1 (mesmo terminal usado na configuração do ambiente)
 
 ```bash
-python minerador.py
+python miner.py
 ```
 
 ### Terminal 2
@@ -72,7 +72,7 @@ python minerador.py
 cd [caminho para a pasta]
 Set-ExecutionPolicy Bypass -Scope Process
 .\.venv\Scripts\Activate.ps1
-python minerador.py
+python miner.py
 ```
 
 ### Terminal 3
@@ -81,7 +81,7 @@ python minerador.py
 cd [caminho para a pasta]
 Set-ExecutionPolicy Bypass -Scope Process
 .\.venv\Scripts\Activate.ps1
-python minerador.py
+python miner.py
 ```
 
 ---
