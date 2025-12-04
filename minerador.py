@@ -9,7 +9,7 @@ from threading import Thread
 HOST_BROKER = "broker.emqx.io"
 PORTA_BROKER = 1883
 
-FAIXA_DIFICULDADE = (1, 4)
+FAIXA_DIFICULDADE = (1, 20)
 PASSO_THROTTLE = 50000
 
 SUFIXO = "1dezembro"
