@@ -6,7 +6,7 @@ import time
 from threading import Thread, Lock
 
 # -------------------------------
-# Configurações MQTT e do Sistema
+# Configurações MQTT
 # -------------------------------
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
@@ -15,12 +15,21 @@ NUM_PARTICIPANTS = 3
 CHALLENGE_MIN = 1
 CHALLENGE_MAX = 20
 
+# -------------------------------
 # Tópicos MQTT
+# -------------------------------
 TOPIC_INIT = "sd/init"
 TOPIC_ELECTION = "sd/election"
 TOPIC_CHALLENGE = "sd/challenge"
 TOPIC_SOLUTION = "sd/solution"
 TOPIC_RESULT = "sd/result"
+
+# -------------------------------
+# Resultados
+# -------------------------------
+RESULT_PENDING = -1
+RESULT_REJECTED = 0
+RESULT_ACCEPTED = 1
 
 # -------------------------------
 # Estado do Nó
@@ -33,7 +42,7 @@ votes_received = {}
 transaction_table = {}
 table_lock = Lock()
 
-print(f"[INFO] ClientID: {ClientID} | VoteID: {VoteID}")
+print(f">>> Iniciando nó {ClientID} (VoteID {VoteID})")
 
 # -------------------------------
 # Funções de Hash e Desafio
@@ -57,10 +66,13 @@ def solve_challenge(challenge):
 # Callbacks MQTT
 # -------------------------------
 def on_connect(client, userdata, flags, rc):
-    print("[MQTT] Conectado com broker.")
-    client.subscribe([(TOPIC_INIT, 0), (TOPIC_ELECTION, 0),
-                      (TOPIC_CHALLENGE, 0), (TOPIC_SOLUTION, 0),
-                      (TOPIC_RESULT, 0)])
+    if rc == 0:
+        print(">>> Conectado ao broker MQTT.")
+        client.subscribe([(TOPIC_INIT,0), (TOPIC_ELECTION,0),
+                          (TOPIC_CHALLENGE,0), (TOPIC_SOLUTION,0),
+                          (TOPIC_RESULT,0)])
+    else:
+        print(f"[ERRO] Conexão MQTT falhou ({rc})")
 
 def on_message(client, userdata, msg):
     global leader_id
@@ -71,38 +83,43 @@ def on_message(client, userdata, msg):
         cid = payload["ClientID"]
         if cid != ClientID:
             init_received.add(cid)
-        print(f"[INIT] Recebido ClientID: {cid}")
+        print(f">>> [INICIALIZAÇÃO] Recebido ClientID {cid}")
 
     elif topic == TOPIC_ELECTION:
         cid = payload["ClientID"]
         vote = payload["VoteID"]
         votes_received[cid] = vote
-        print(f"[ELECTION] Recebido voto {vote} de ClientID {cid}")
+        print(f">>> [VOTAÇÃO] Recebido voto {vote} de ClientID {cid}")
 
     elif topic == TOPIC_CHALLENGE:
         tx_id = payload["TransactionID"]
         challenge = payload["Challenge"]
-        print(f"[CHALLENGE] TransactionID: {tx_id}, Challenge: {challenge}")
+        print(f"--- T{tx_id} RECEBIDA. Dificuldade {challenge}. Iniciando mineração...")
         Thread(target=mine_solution, args=(tx_id, challenge), daemon=True).start()
 
     elif topic == TOPIC_SOLUTION:
-        # Apenas o líder processa soluções
         if ClientID != leader_id:
             return
         handle_solution_leader(payload)
+
+    elif topic == TOPIC_RESULT:
+        tx_id = payload.get("TransactionID")
+        result = payload.get("Result")
+        winner = payload.get("ClientID")
+        status = "ACEITA" if result == RESULT_ACCEPTED else "REJEITADA"
+        print(f">>> T{tx_id} RESULTADO {status}. Vencedor: {winner}")
 
 # -------------------------------
 # Função de Mineração
 # -------------------------------
 def mine_solution(tx_id, challenge):
     solution = solve_challenge(challenge)
-    msg = {
+    client.publish(TOPIC_SOLUTION, json.dumps({
         "ClientID": ClientID,
         "TransactionID": tx_id,
         "Solution": solution
-    }
-    client.publish(TOPIC_SOLUTION, json.dumps(msg))
-    print(f"[MINE] Enviado solution para TransactionID {tx_id}")
+    }))
+    print(f"--- Solução encontrada para T{tx_id}: {solution}")
 
 # -------------------------------
 # Função para líder processar soluções
@@ -115,70 +132,65 @@ def handle_solution_leader(payload):
     with table_lock:
         if tx_id not in transaction_table:
             return
-        if transaction_table[tx_id]["Winner"] != -1:
-            return  # Já temos um vencedor
+        if transaction_table[tx_id]["Winner"] != RESULT_PENDING:
+            return
 
         challenge = transaction_table[tx_id]["Challenge"]
         if sha1_hash(solution).startswith("0" * challenge):
             transaction_table[tx_id]["Winner"] = cid
             transaction_table[tx_id]["Solution"] = solution
-            result_msg = {
+            client.publish(TOPIC_RESULT, json.dumps({
                 "ClientID": cid,
                 "TransactionID": tx_id,
                 "Solution": solution,
-                "Result": 1
-            }
-            client.publish(TOPIC_RESULT, json.dumps(result_msg))
-            print(f"[CONTROL] Solução válida de ClientID {cid} para TransactionID {tx_id}")
+                "Result": RESULT_ACCEPTED
+            }))
+            print(f"--- [LIDER] Solução ACEITA de {cid} para T{tx_id}")
+            # Criar próximo desafio
+            Thread(target=create_new_transaction, daemon=True).start()
         else:
-            # Apenas registra resultado inválido
-            result_msg = {
+            client.publish(TOPIC_RESULT, json.dumps({
                 "ClientID": cid,
                 "TransactionID": tx_id,
                 "Solution": solution,
-                "Result": 0
-            }
-            client.publish(TOPIC_RESULT, json.dumps(result_msg))
-            print(f"[CONTROL] Solução inválida de ClientID {cid} para TransactionID {tx_id}")
+                "Result": RESULT_REJECTED
+            }))
+            print(f"--- [LIDER] Solução REJEITADA de {cid} para T{tx_id}")
 
 # -------------------------------
-# Função do Controlador (líder)
+# Função do Controlador / líder
 # -------------------------------
-def controller_loop():
-    tx_id = 0
-    while True:
-        challenge = generate_challenge()
-        with table_lock:
-            transaction_table[tx_id] = {"Challenge": challenge, "Solution": None, "Winner": -1}
+tx_counter = 0
+def create_new_transaction():
+    global tx_counter
+    tx_id = tx_counter
+    tx_counter += 1
+    challenge = generate_challenge()
+    with table_lock:
+        transaction_table[tx_id] = {"Challenge": challenge, "Solution": "", "Winner": RESULT_PENDING}
 
-        client.publish(TOPIC_CHALLENGE, json.dumps({"TransactionID": tx_id, "Challenge": challenge}))
-        print(f"[CONTROL] Novo desafio enviado: TransactionID {tx_id}, Challenge {challenge}")
-
-        time.sleep(10)
-        tx_id += 1
+    client.publish(TOPIC_CHALLENGE, json.dumps({
+        "TransactionID": tx_id,
+        "Challenge": challenge
+    }))
+    print(f"--- [LIDER] Criando T{tx_id} (Dificuldade {challenge})")
 
 # -------------------------------
-# Inicialização e Eleição robusta
+# Inicialização e Eleição
 # -------------------------------
 def init_and_election():
     client.publish(TOPIC_INIT, json.dumps({"ClientID": ClientID}))
-    print("[INIT] InitMsg enviado.")
-
-    start_time = time.time()
-    while time.time() - start_time < 3:
-        time.sleep(0.1)
+    print(">>> [INICIALIZAÇÃO] InitMsg enviado.")
+    time.sleep(2)
 
     client.publish(TOPIC_ELECTION, json.dumps({"ClientID": ClientID, "VoteID": VoteID}))
-    print("[ELECTION] ElectionMsg enviado.")
-
-    start_time = time.time()
-    while time.time() - start_time < 3:
-        time.sleep(0.1)
+    print(">>> [VOTAÇÃO] ElectionMsg enviado.")
+    time.sleep(2)
 
     all_votes = votes_received.copy()
     all_votes[ClientID] = VoteID
     leader = max(all_votes.items(), key=lambda x: (x[1], x[0]))[0]
-    print(f"[ELECTION] Líder eleito: ClientID {leader}")
+    print(f">>> [VOTAÇÃO] Líder eleito: {leader} (Sou eu? {ClientID == leader})")
     return leader
 
 # -------------------------------
@@ -190,8 +202,8 @@ def main_loop():
     leader_id = init_and_election()
 
     if leader_id == ClientID:
-        print("[INFO] Eu sou o líder, iniciando controlador.")
-        Thread(target=controller_loop, daemon=True).start()
+        print(f">>> [INFO] Eu sou o líder. Iniciando controlador...")
+        create_new_transaction()  # primeiro desafio
 
     while True:
         time.sleep(1)
