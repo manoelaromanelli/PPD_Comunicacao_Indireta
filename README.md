@@ -62,13 +62,13 @@ O sistema exige no mínimo 3 participantes, o que significa que iremos utilizar 
 
 ### Terminal 1 (mesmo terminal usado na configuração do ambiente)
 
-```bash
+```
 python miner.py
 ```
 
 ### Terminal 2
 
-```bash
+```
 cd [caminho para a pasta]
 Set-ExecutionPolicy Bypass -Scope Process
 .\.venv\Scripts\Activate.ps1
@@ -77,7 +77,7 @@ python miner.py
 
 ### Terminal 3
 
-```bash
+```
 cd [caminho para a pasta]
 Set-ExecutionPolicy Bypass -Scope Process
 .\.venv\Scripts\Activate.ps1
