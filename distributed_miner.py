@@ -37,7 +37,6 @@ STATUS = {
 # ------------------------------
 MINING_PAUSE = 0.001
 NONCE_STEP = 50000
-DIFFICULTY_MAX = 20  # Desafios de 1 a 20
 
 # ------------------------------
 # Função de Hash
@@ -86,7 +85,6 @@ class Node:
         self.leader_id = None
         self.is_leader = False
         self.current_tx = 0
-        self.current_diff = 1  # Desafios sequenciais 1..20
         self.peers = set()
         self.votes = {}
         self.transactions = {}
@@ -225,10 +223,7 @@ class Node:
     # --------------------------
     def _issue_transaction(self):
         self.current_tx += 1
-        diff = self.current_diff
-        self.current_diff += 1
-        if self.current_diff > DIFFICULTY_MAX:
-            self.current_diff = 1
+        diff = random.randint(1, 20)  # dificuldade aleatória de 1 a 20
         self.transactions[self.current_tx] = {"Challenge": diff, "Solution": "", "Winner": STATUS["PENDING"]}
         print(f"--- [LÍDER] Criando transação T{self.current_tx} (Dificuldade {diff}) ---")
         self._send(CHANNELS["CHALLENGE"], {"TransactionID": self.current_tx, "Challenge": diff})
@@ -279,15 +274,13 @@ class Node:
         self.transactions[tx]["Solution"] = sol
         print(f"--- [LÍDER] Solução aprovada de {peer} para T{tx} ---")
         self._send(CHANNELS["RESULT"], {"ID": peer, "TransactionID": tx, "Solution": sol, "Result": STATUS["ACCEPTED"]})
-        time.sleep(3)
-        self._issue_transaction()
 
     def _reject_solution(self, peer, tx, sol):
         print(f"[LÍDER] Solução rejeitada de {peer} para T{tx}")
         self._send(CHANNELS["RESULT"], {"ID": peer, "TransactionID": tx, "Solution": sol, "Result": STATUS["REJECTED"]})
 
     # --------------------------
-    # Recebimento de resultado (minerador)
+    # Recebimento de resultado (minerador e líder)
     # --------------------------
     def _handle_result(self, data):
         tx = data.get("TransactionID")
@@ -295,9 +288,12 @@ class Node:
         winner = data.get("ID")
         if result == STATUS["ACCEPTED"]:
             print(f">>> T{tx} finalizada. Vencedor: {winner}")
+            # Após exibir resultado, líder emite próxima transação
+            if self.is_leader:
+                self._issue_transaction()
+            # Para minerador que estava minerando
             if self.mining_thread and self.mining_thread.tx == tx:
                 self.mining_thread.stop()
-
 
 # ------------------------------
 # Execução do Nó
