@@ -11,7 +11,7 @@ from threading import Thread, Lock
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
 
-NUM_PARTICIPANTS = 3   # Número total de nós esperados
+NUM_PARTICIPANTS = 3
 CHALLENGE_MIN = 1
 CHALLENGE_MAX = 20
 
@@ -85,8 +85,11 @@ def on_message(client, userdata, msg):
         print(f"[CHALLENGE] TransactionID: {tx_id}, Challenge: {challenge}")
         Thread(target=mine_solution, args=(tx_id, challenge), daemon=True).start()
 
-    elif topic == TOPIC_RESULT:
-        print(f"[RESULT] {payload}")
+    elif topic == TOPIC_SOLUTION:
+        # Apenas o líder processa soluções
+        if ClientID != leader_id:
+            return
+        handle_solution_leader(payload)
 
 # -------------------------------
 # Função de Mineração
@@ -102,59 +105,55 @@ def mine_solution(tx_id, challenge):
     print(f"[MINE] Enviado solution para TransactionID {tx_id}")
 
 # -------------------------------
-# Callback para soluções recebidas
+# Função para líder processar soluções
 # -------------------------------
-def handle_solutions():
-    def inner(client, userdata, msg):
-        payload = json.loads(msg.payload.decode())
-        tx_id = payload["TransactionID"]
-        solution = payload["Solution"]
-        cid = payload["ClientID"]
+def handle_solution_leader(payload):
+    tx_id = payload["TransactionID"]
+    solution = payload["Solution"]
+    cid = payload["ClientID"]
 
-        with table_lock:
-            if tx_id in transaction_table and transaction_table[tx_id]["Winner"] == -1:
-                challenge = transaction_table[tx_id]["Challenge"]
-                if sha1_hash(solution).startswith("0" * challenge):
-                    transaction_table[tx_id]["Winner"] = cid
-                    transaction_table[tx_id]["Solution"] = solution
-                    result_msg = {
-                        "ClientID": cid,
-                        "TransactionID": tx_id,
-                        "Solution": solution,
-                        "Result": 1
-                    }
-                    client.publish(TOPIC_RESULT, json.dumps(result_msg))
-                    print(f"[CONTROL] Solução válida de ClientID {cid} para TransactionID {tx_id}")
-                else:
-                    result_msg = {
-                        "ClientID": cid,
-                        "TransactionID": tx_id,
-                        "Solution": solution,
-                        "Result": 0
-                    }
-                    client.publish(TOPIC_RESULT, json.dumps(result_msg))
-                    print(f"[CONTROL] Solução inválida de ClientID {cid} para TransactionID {tx_id}")
-    return inner
+    with table_lock:
+        if tx_id not in transaction_table:
+            return
+        if transaction_table[tx_id]["Winner"] != -1:
+            return  # Já temos um vencedor
+
+        challenge = transaction_table[tx_id]["Challenge"]
+        if sha1_hash(solution).startswith("0" * challenge):
+            transaction_table[tx_id]["Winner"] = cid
+            transaction_table[tx_id]["Solution"] = solution
+            result_msg = {
+                "ClientID": cid,
+                "TransactionID": tx_id,
+                "Solution": solution,
+                "Result": 1
+            }
+            client.publish(TOPIC_RESULT, json.dumps(result_msg))
+            print(f"[CONTROL] Solução válida de ClientID {cid} para TransactionID {tx_id}")
+        else:
+            # Apenas registra resultado inválido
+            result_msg = {
+                "ClientID": cid,
+                "TransactionID": tx_id,
+                "Solution": solution,
+                "Result": 0
+            }
+            client.publish(TOPIC_RESULT, json.dumps(result_msg))
+            print(f"[CONTROL] Solução inválida de ClientID {cid} para TransactionID {tx_id}")
 
 # -------------------------------
-# Função do Controlador (apenas para o líder)
+# Função do Controlador (líder)
 # -------------------------------
 def controller_loop():
     tx_id = 0
     while True:
         challenge = generate_challenge()
         with table_lock:
-            transaction_table[tx_id] = {
-                "Challenge": challenge,
-                "Solution": None,
-                "Winner": -1
-            }
+            transaction_table[tx_id] = {"Challenge": challenge, "Solution": None, "Winner": -1}
 
-        msg = {"TransactionID": tx_id, "Challenge": challenge}
-        client.publish(TOPIC_CHALLENGE, json.dumps(msg))
+        client.publish(TOPIC_CHALLENGE, json.dumps({"TransactionID": tx_id, "Challenge": challenge}))
         print(f"[CONTROL] Novo desafio enviado: TransactionID {tx_id}, Challenge {challenge}")
 
-        # Aguarda soluções por 10 segundos
         time.sleep(10)
         tx_id += 1
 
@@ -162,29 +161,22 @@ def controller_loop():
 # Inicialização e Eleição robusta
 # -------------------------------
 def init_and_election():
-    # Envia InitMsg
     client.publish(TOPIC_INIT, json.dumps({"ClientID": ClientID}))
     print("[INIT] InitMsg enviado.")
 
-    # Aguarda InitMsg por 3s (não bloqueia indefinidamente)
     start_time = time.time()
     while time.time() - start_time < 3:
         time.sleep(0.1)
 
-    # Envia ElectionMsg
     client.publish(TOPIC_ELECTION, json.dumps({"ClientID": ClientID, "VoteID": VoteID}))
     print("[ELECTION] ElectionMsg enviado.")
 
-    # Aguarda votos por 3s
     start_time = time.time()
     while time.time() - start_time < 3:
         time.sleep(0.1)
 
-    # Inclui próprio voto
     all_votes = votes_received.copy()
     all_votes[ClientID] = VoteID
-
-    # Calcula líder com base nos votos recebidos até agora
     leader = max(all_votes.items(), key=lambda x: (x[1], x[0]))[0]
     print(f"[ELECTION] Líder eleito: ClientID {leader}")
     return leader
@@ -194,14 +186,13 @@ def init_and_election():
 # -------------------------------
 def main_loop():
     global leader_id
-    client.loop_start()  # Roda loop MQTT em background
+    client.loop_start()
     leader_id = init_and_election()
 
     if leader_id == ClientID:
         print("[INFO] Eu sou o líder, iniciando controlador.")
         Thread(target=controller_loop, daemon=True).start()
 
-    # Mantém o programa vivo
     while True:
         time.sleep(1)
 
@@ -211,7 +202,6 @@ def main_loop():
 client = mqtt.Client()
 client.on_connect = on_connect
 client.on_message = on_message
-client.message_callback_add(TOPIC_SOLUTION, handle_solutions())
 client.connect(MQTT_BROKER, MQTT_PORT, 60)
 
 # -------------------------------
