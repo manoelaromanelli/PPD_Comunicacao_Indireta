@@ -5,7 +5,7 @@ from threading import Thread
 MQTT_HOST = "broker.emqx.io"
 MQTT_PORT = 1883
 
-DIFFICULTY_RANGE = (1, 20)
+DIFFICULTY_RANGE = (1, 10)
 MINING_PAUSE = 0.001
 NONCE_STEP = 50000
 
