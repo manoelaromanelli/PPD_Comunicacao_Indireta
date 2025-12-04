@@ -33,7 +33,7 @@ Para preparar o ambiente, será necessário instalar a biblioteca Paho MQTT e cr
 
 ### 3.1 Windows (PowerShell)
 
-```powershell
+```
 cd [caminho para a pasta]
 py -m venv .venv
 Set-ExecutionPolicy Bypass -Scope Process
@@ -45,7 +45,7 @@ pip install paho-mqtt
 
 ### 3.2 Linux / macOS
 
-```bash
+```
 cd [caminho para a pasta]
 python3 -m venv .venv
 source .venv/bin/activate
