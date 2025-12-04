@@ -28,6 +28,7 @@ Para rodar o projeto, é necessário:
 ## 3) Ambiente e instalação de dependências
 
 Para preparar o ambiente, será necessário instalar a biblioteca Paho MQTT e criar e ativar venv. Abra o terminal e execute:
+ATENÇÃO: [caminho da pasta] se refere à pasta onde o arquivo miner.py está localizado.
 
 ---
 
