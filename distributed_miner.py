@@ -10,12 +10,12 @@ from threading import Thread, Lock
 # -------------------------------
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
-NUM_PARTICIPANTS = 3  # Ajustar de acordo com o número de nós abertos
+NUM_PARTICIPANTS = 3
 
 CHALLENGE_MIN = 1
 CHALLENGE_MAX = 20
-INIT_TIMEOUT = 10        # segundos
-ELECTION_TIMEOUT = 10    # segundos
+INIT_TIMEOUT = 10
+ELECTION_TIMEOUT = 10
 
 # Tópicos MQTT
 TOPIC_INIT = "sd/init"
@@ -35,8 +35,6 @@ init_received = set()
 votes_received = {}
 transaction_table = {}
 table_lock = Lock()
-
-print(f"[INFO] ClientID: {ClientID} | VoteID: {VoteID}")
 
 # -------------------------------
 # Funções de Hash e Desafio
@@ -60,7 +58,6 @@ def solve_challenge(challenge):
 # MQTT Callbacks
 # -------------------------------
 def on_connect(client, userdata, flags, rc):
-    print("[MQTT] Conectado ao broker.")
     client.subscribe([(TOPIC_INIT, 0), (TOPIC_ELECTION, 0),
                       (TOPIC_CHALLENGE, 0), (TOPIC_SOLUTION, 0),
                       (TOPIC_RESULT, 0)])
@@ -73,22 +70,16 @@ def on_message(client, userdata, msg):
         cid = payload["ClientID"]
         if cid != ClientID:
             init_received.add(cid)
-        print(f"[INIT] Recebido ClientID: {cid} | Init recebidos: {len(init_received)}")
 
     elif topic == TOPIC_ELECTION:
         cid = payload["ClientID"]
         vote = payload["VoteID"]
         votes_received[cid] = vote
-        print(f"[ELECTION] Recebido VoteID {vote} de ClientID {cid} | Votos recebidos: {len(votes_received)}")
 
     elif topic == TOPIC_CHALLENGE:
         tx_id = payload["TransactionID"]
         challenge = payload["Challenge"]
-        print(f"[CHALLENGE] TransactionID: {tx_id}, Challenge: {challenge}")
         Thread(target=mine_solution, args=(tx_id, challenge), daemon=True).start()
-
-    elif topic == TOPIC_RESULT:
-        print(f"[RESULT] {payload}")
 
 # -------------------------------
 # Função de Mineração
@@ -97,7 +88,6 @@ def mine_solution(tx_id, challenge):
     solution = solve_challenge(challenge)
     msg = {"ClientID": ClientID, "TransactionID": tx_id, "Solution": solution}
     client.publish(TOPIC_SOLUTION, json.dumps(msg))
-    print(f"[MINE] Enviado solution para TransactionID {tx_id}")
 
 # -------------------------------
 # Função do Controlador
@@ -108,16 +98,13 @@ def controller_loop():
         challenge = generate_challenge()
         with table_lock:
             transaction_table[tx_id] = {"Challenge": challenge, "Solution": None, "Winner": -1}
-
         msg = {"TransactionID": tx_id, "Challenge": challenge}
         client.publish(TOPIC_CHALLENGE, json.dumps(msg))
-        print(f"[CONTROL] Novo desafio enviado: TransactionID {tx_id}, Challenge {challenge}")
-
-        time.sleep(10)  # Espera soluções
+        time.sleep(10)
         tx_id += 1
 
 # -------------------------------
-# Função para tratar soluções recebidas
+# Callback para soluções recebidas
 # -------------------------------
 def handle_solutions(client, userdata, msg):
     payload = json.loads(msg.payload.decode())
@@ -133,43 +120,33 @@ def handle_solutions(client, userdata, msg):
                 transaction_table[tx_id]["Solution"] = solution
                 result_msg = {"ClientID": cid, "TransactionID": tx_id, "Solution": solution, "Result": 1}
                 client.publish(TOPIC_RESULT, json.dumps(result_msg))
-                print(f"[CONTROL] Solução válida de ClientID {cid} para TransactionID {tx_id}")
             else:
                 result_msg = {"ClientID": cid, "TransactionID": tx_id, "Solution": solution, "Result": 0}
                 client.publish(TOPIC_RESULT, json.dumps(result_msg))
-                print(f"[CONTROL] Solução inválida de ClientID {cid} para TransactionID {tx_id}")
 
 # -------------------------------
 # Inicialização e Eleição
 # -------------------------------
 def init_and_election():
-    # Loop de envio de InitMsg com timeout
     start_time = time.time()
     while len(init_received) < NUM_PARTICIPANTS - 1:
         init_msg = {"ClientID": ClientID}
         client.publish(TOPIC_INIT, json.dumps(init_msg))
-        print(f"[INIT] InitMsg enviado. Init recebidos: {len(init_received)}")
         time.sleep(1)
         if time.time() - start_time > INIT_TIMEOUT:
-            print("[WARN] Timeout aguardando InitMsgs, continuando...")
             break
 
-    # Envio de ElectionMsg com timeout
     start_time = time.time()
     while len(votes_received) < NUM_PARTICIPANTS - 1:
         election_msg = {"ClientID": ClientID, "VoteID": VoteID}
         client.publish(TOPIC_ELECTION, json.dumps(election_msg))
-        print(f"[ELECTION] ElectionMsg enviado. Votos recebidos: {len(votes_received)}")
         time.sleep(1)
         if time.time() - start_time > ELECTION_TIMEOUT:
-            print("[WARN] Timeout aguardando ElectionMsgs, continuando...")
             break
 
-    # Determina líder
     all_votes = votes_received.copy()
     all_votes[ClientID] = VoteID
     leader = max(all_votes.items(), key=lambda x: (x[1], x[0]))[0]
-    print(f"[ELECTION] Líder eleito: ClientID {leader}")
     return leader
 
 # -------------------------------
@@ -188,7 +165,6 @@ def main_loop():
     global leader_id
     leader_id = init_and_election()
     if leader_id == ClientID:
-        print("[INFO] Eu sou o líder, iniciando controlador.")
         Thread(target=controller_loop, daemon=True).start()
     client.loop_forever()
 
