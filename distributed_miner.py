@@ -146,7 +146,6 @@ def handle_solution_leader(payload):
                 "Result": RESULT_ACCEPTED
             }))
             print(f"--- [LIDER] Solução ACEITA de {cid} para T{tx_id}")
-            # Criar próximo desafio
             Thread(target=create_new_transaction, daemon=True).start()
         else:
             client.publish(TOPIC_RESULT, json.dumps({
@@ -176,17 +175,26 @@ def create_new_transaction():
     print(f"--- [LIDER] Criando T{tx_id} (Dificuldade {challenge})")
 
 # -------------------------------
-# Inicialização e Eleição
+# Inicialização e Eleição com sincronização
 # -------------------------------
 def init_and_election():
+    # Envia InitMsg
     client.publish(TOPIC_INIT, json.dumps({"ClientID": ClientID}))
     print(">>> [INICIALIZAÇÃO] InitMsg enviado.")
-    time.sleep(2)
 
+    # Espera todos os nós conectarem
+    while len(init_received) < NUM_PARTICIPANTS - 1:
+        time.sleep(0.5)
+
+    # Envia ElectionMsg
     client.publish(TOPIC_ELECTION, json.dumps({"ClientID": ClientID, "VoteID": VoteID}))
     print(">>> [VOTAÇÃO] ElectionMsg enviado.")
-    time.sleep(2)
 
+    # Aguarda votos
+    while len(votes_received) < NUM_PARTICIPANTS - 1:
+        time.sleep(0.5)
+
+    # Determina líder
     all_votes = votes_received.copy()
     all_votes[ClientID] = VoteID
     leader = max(all_votes.items(), key=lambda x: (x[1], x[0]))[0]
@@ -203,7 +211,8 @@ def main_loop():
 
     if leader_id == ClientID:
         print(f">>> [INFO] Eu sou o líder. Iniciando controlador...")
-        create_new_transaction()  # primeiro desafio
+        # cria a primeira transação somente após sincronização completa
+        create_new_transaction()
 
     while True:
         time.sleep(1)
