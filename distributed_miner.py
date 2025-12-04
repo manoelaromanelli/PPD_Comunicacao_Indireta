@@ -223,7 +223,7 @@ class Node:
     # --------------------------
     def _issue_transaction(self):
         self.current_tx += 1
-        diff = random.randint(1, 20)  # dificuldade aleatória de 1 a 20
+        diff = random.randint(1, 5)  # dificuldade aleatória de 1 a 20
         self.transactions[self.current_tx] = {"Challenge": diff, "Solution": "", "Winner": STATUS["PENDING"]}
         print(f"--- [LÍDER] Criando transação T{self.current_tx} (Dificuldade {diff}) ---")
         self._send(CHANNELS["CHALLENGE"], {"TransactionID": self.current_tx, "Challenge": diff})
