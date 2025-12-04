@@ -11,7 +11,7 @@ from threading import Thread, Lock
 MQTT_BROKER = "broker.emqx.io"
 MQTT_PORT = 1883
 
-NUM_PARTICIPANTS = 3   # Total de nós
+NUM_PARTICIPANTS = 3   # Número total de nós esperados
 CHALLENGE_MIN = 1
 CHALLENGE_MAX = 20
 
@@ -137,7 +137,7 @@ def handle_solutions():
     return inner
 
 # -------------------------------
-# Função do Controlador
+# Função do Controlador (apenas para o líder)
 # -------------------------------
 def controller_loop():
     tx_id = 0
@@ -154,42 +154,37 @@ def controller_loop():
         client.publish(TOPIC_CHALLENGE, json.dumps(msg))
         print(f"[CONTROL] Novo desafio enviado: TransactionID {tx_id}, Challenge {challenge}")
 
+        # Aguarda soluções por 10 segundos
         time.sleep(10)
         tx_id += 1
 
 # -------------------------------
-# Inicialização e Eleição
+# Inicialização e Eleição robusta
 # -------------------------------
 def init_and_election():
     # Envia InitMsg
-    init_msg = {"ClientID": ClientID}
-    client.publish(TOPIC_INIT, json.dumps(init_msg))
+    client.publish(TOPIC_INIT, json.dumps({"ClientID": ClientID}))
     print("[INIT] InitMsg enviado.")
 
-    # Espera InitMsg dos outros nós (timeout de 5s)
+    # Aguarda InitMsg por 3s (não bloqueia indefinidamente)
     start_time = time.time()
-    while len(init_received) < NUM_PARTICIPANTS - 1:
-        if time.time() - start_time > 5:
-            break
+    while time.time() - start_time < 3:
         time.sleep(0.1)
 
     # Envia ElectionMsg
-    election_msg = {"ClientID": ClientID, "VoteID": VoteID}
-    client.publish(TOPIC_ELECTION, json.dumps(election_msg))
+    client.publish(TOPIC_ELECTION, json.dumps({"ClientID": ClientID, "VoteID": VoteID}))
     print("[ELECTION] ElectionMsg enviado.")
 
-    # Espera votos dos outros nós (timeout de 5s)
+    # Aguarda votos por 3s
     start_time = time.time()
-    while len(votes_received) < NUM_PARTICIPANTS - 1:
-        if time.time() - start_time > 5:
-            break
+    while time.time() - start_time < 3:
         time.sleep(0.1)
 
     # Inclui próprio voto
     all_votes = votes_received.copy()
     all_votes[ClientID] = VoteID
 
-    # Eleição do líder
+    # Calcula líder com base nos votos recebidos até agora
     leader = max(all_votes.items(), key=lambda x: (x[1], x[0]))[0]
     print(f"[ELECTION] Líder eleito: ClientID {leader}")
     return leader
